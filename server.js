@@ -1,6 +1,8 @@
 const express = require('express');
 const { simpleGit } = require('simple-git');
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 
@@ -28,7 +30,15 @@ app.get('/api/status', async (req, res) => {
       git.branch(['-a', '--sort=-committerdate']),
       git.getRemotes(true),
     ]);
-    res.json({ status, branches, remotes });
+    const rebaseMergeDir = path.join(repo, '.git', 'rebase-merge');
+    const rebaseApplyDir = path.join(repo, '.git', 'rebase-apply');
+    const rebaseInProgress = fs.existsSync(rebaseMergeDir) || fs.existsSync(rebaseApplyDir);
+    let rebaseStep = null, rebaseTotal = null;
+    if (rebaseInProgress) {
+      try { rebaseStep = parseInt(fs.readFileSync(path.join(rebaseMergeDir, 'msgnum'), 'utf8').trim()); } catch {}
+      try { rebaseTotal = parseInt(fs.readFileSync(path.join(rebaseMergeDir, 'end'), 'utf8').trim()); } catch {}
+    }
+    res.json({ status, branches, remotes, rebaseInProgress, rebaseStep, rebaseTotal });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -84,15 +94,88 @@ app.post('/api/checkout', async (req, res) => {
   }
 });
 
-// POST /api/rebase  { repo, onto }
-app.post('/api/rebase', async (req, res) => {
-  const { repo, onto } = req.body;
-  if (!repo || !onto) return res.status(400).json({ error: 'repo and onto required' });
+// GET /api/rebase-commits?repo=<>&base=<branch>
+app.get('/api/rebase-commits', async (req, res) => {
+  const { repo, base } = req.query;
+  if (!repo || !base) return res.status(400).json({ error: 'repo and base required' });
   try {
-    const { stdout, stderr } = await safeExec('git', ['rebase', onto], repo);
+    const { stdout } = await safeExec('git', [
+      'log', '--format=%H\t%s', '--reverse', `${base}..HEAD`
+    ], repo);
+    const commits = stdout.trim().split('\n').filter(Boolean).map(line => {
+      const tab = line.indexOf('\t');
+      return { hash: line.slice(0, tab), subject: line.slice(tab + 1) };
+    });
+    res.json({ commits });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/rebase-interactive { repo, onto, todo: [{action, hash, subject, newMessage?}] }
+app.post('/api/rebase-interactive', async (req, res) => {
+  const { repo, onto, todo } = req.body;
+  if (!repo || !onto || !Array.isArray(todo)) return res.status(400).json({ error: 'repo, onto, todo required' });
+
+  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-rebase-'));
+  try {
+    // Build and write the todo file (oldest commit first, as git expects)
+    const todoLines = todo.map(e => `${e.action} ${e.hash} ${e.subject}`);
+    const todoPath = path.join(sessionDir, 'todo');
+    fs.writeFileSync(todoPath, todoLines.join('\n') + '\n');
+
+    // Build editor message queue: only reword and squash trigger GIT_EDITOR calls.
+    // For squash with no custom message we skip the file so git auto-combines.
+    const editorEntries = todo.filter(e => e.action === 'reword' || e.action === 'squash');
+    editorEntries.forEach((e, i) => {
+      const msg = e.newMessage?.trim();
+      if (e.action === 'squash' && !msg) return;
+      fs.writeFileSync(path.join(sessionDir, `editor_msg_${i}`), (msg || e.subject).trim() + '\n');
+    });
+    fs.writeFileSync(path.join(sessionDir, 'editor_idx'), '0');
+
+    // seq-editor.sh: replaces git's generated todo with ours
+    const seqEditorPath = path.join(sessionDir, 'seq-editor.sh');
+    fs.writeFileSync(seqEditorPath, `#!/bin/sh\ncp "${todoPath}" "$1"\n`);
+    fs.chmodSync(seqEditorPath, '755');
+
+    // editor.sh: injects the next queued message on each GIT_EDITOR call
+    const editorPath = path.join(sessionDir, 'editor.sh');
+    fs.writeFileSync(editorPath, `#!/bin/sh
+DIR="${sessionDir}"
+IDX_FILE="$DIR/editor_idx"
+IDX=$(cat "$IDX_FILE" 2>/dev/null)
+IDX=\${IDX:-0}
+MSG_FILE="$DIR/editor_msg_$IDX"
+if [ -f "$MSG_FILE" ]; then
+  cat "$MSG_FILE" > "$1"
+fi
+printf '%s' "$((IDX + 1))" > "$IDX_FILE"
+`);
+    fs.chmodSync(editorPath, '755');
+
+    const env = {
+      ...process.env,
+      GIT_SEQUENCE_EDITOR: seqEditorPath,
+      GIT_EDITOR: editorPath,
+    };
+
+    const { stdout, stderr } = await execFileAsync('git', ['rebase', '-i', onto], {
+      cwd: repo, env, timeout: 60000,
+    });
     res.json({ ok: true, output: stdout + stderr });
   } catch (e) {
-    res.status(500).json({ ok: false, output: e.stdout + e.stderr, error: e.message });
+    const rebaseMergeDir = path.join(repo, '.git', 'rebase-merge');
+    const inProgress = fs.existsSync(rebaseMergeDir) ||
+                       fs.existsSync(path.join(repo, '.git', 'rebase-apply'));
+    res.json({
+      ok: false,
+      inProgress,
+      output: (e.stdout || '') + (e.stderr || ''),
+      error: e.message,
+    });
+  } finally {
+    try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch {}
   }
 });
 
@@ -172,8 +255,12 @@ app.get('/api/diff', async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3434;
-app.listen(PORT, () => {
-  console.log(`Git Dashboard running at http://localhost:${PORT}`);
-  console.log('Open the URL above, then enter the path to any git repository.');
-});
+if (require.main === module) {
+  const PORT = process.env.PORT || 3434;
+  app.listen(PORT, () => {
+    console.log(`Git Dashboard running at http://localhost:${PORT}`);
+    console.log('Open the URL above, then enter the path to any git repository.');
+  });
+}
+
+module.exports = app;
