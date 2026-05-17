@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Git Dashboard</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="header-left">
+    <span class="logo">⎇ Git Dashboard</span>
+    <div class="repo-bar">
+      <input id="repo-path" type="text" placeholder="Absolute path to git repository…" />
+      <button id="btn-load" class="btn btn-primary">Load</button>
+      <button id="btn-fetch" class="btn btn-secondary">Fetch All</button>
+    </div>
+  </div>
+  <div class="status-pill" id="current-branch-pill">no repo loaded</div>
+</header>
+
+<main>
+  <!-- LEFT: branches + actions -->
+  <aside id="sidebar">
+    <section class="panel">
+      <h3>Branches <span class="badge" id="branch-count">0</span></h3>
+      <input id="branch-filter" type="text" placeholder="Filter…" />
+      <ul id="branch-list"></ul>
+    </section>
+
+    <section class="panel">
+      <h3>Quick Actions</h3>
+
+      <div class="action-group">
+        <label>Rebase current branch onto</label>
+        <div class="row">
+          <select id="rebase-target"></select>
+          <button class="btn btn-warn" id="btn-rebase">Rebase</button>
+        </div>
+        <div class="rebase-controls hidden" id="rebase-controls">
+          <button class="btn btn-success" id="btn-rebase-continue">Continue</button>
+          <button class="btn btn-danger" id="btn-rebase-abort">Abort</button>
+        </div>
+      </div>
+
+      <div class="action-group">
+        <label>Amend last commit</label>
+        <input id="amend-msg" type="text" placeholder="Leave blank to keep current message" />
+        <button class="btn btn-warn" id="btn-amend">Amend</button>
+      </div>
+
+      <div class="action-group">
+        <label>Push</label>
+        <div class="row">
+          <select id="push-remote"></select>
+          <label class="toggle"><input type="checkbox" id="force-lease" /> --force-with-lease</label>
+        </div>
+        <button class="btn btn-primary" id="btn-push">Push</button>
+      </div>
+    </section>
+  </aside>
+
+  <!-- CENTER: graph + log -->
+  <div id="content">
+    <div id="tab-bar">
+      <button class="tab active" data-tab="graph">Graph</button>
+      <button class="tab" data-tab="log">Log</button>
+      <button class="tab" data-tab="status">Status</button>
+    </div>
+
+    <div id="tab-graph" class="tab-panel active">
+      <pre id="graph-view">Load a repository to see the commit graph.</pre>
+    </div>
+
+    <div id="tab-log" class="tab-panel hidden">
+      <table id="log-table">
+        <thead><tr><th>Hash</th><th>Subject</th><th>Author</th><th>Date</th><th>Refs</th></tr></thead>
+        <tbody id="log-body"></tbody>
+      </table>
+    </div>
+
+    <div id="tab-status" class="tab-panel hidden">
+      <pre id="status-view">–</pre>
+    </div>
+  </div>
+
+  <!-- RIGHT: output console -->
+  <aside id="output-panel">
+    <h3>Output <button class="btn-link" id="btn-clear-output">clear</button></h3>
+    <pre id="output-log"></pre>
+  </aside>
+</main>
+
+<!-- commit detail modal -->
+<div id="modal" class="modal hidden">
+  <div class="modal-box">
+    <button class="modal-close" id="modal-close">✕</button>
+    <h3 id="modal-title"></h3>
+    <pre id="modal-body"></pre>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
